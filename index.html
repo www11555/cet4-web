@@ -65,6 +65,14 @@
     </div>
 
     <script>
+        // 全局错误捕获，方便移动端调试
+        window.onerror = function(msg, url, lineNo, columnNo, error) {
+            console.error('全局错误:', msg, 'at', url, ':', lineNo);
+            // 简单的移动端弹窗提示（仅在开发阶段有用，可以根据需要关闭）
+            // alert('发生错误: ' + msg + '\n行号: ' + lineNo);
+            return false;
+        };
+
         // 核心配置
         const DAILY_TARGET = 30; // 每天背诵目标
         let wordData = []; // 当前任务单词池
@@ -75,9 +83,21 @@
         let batchSize = 10; 
         let learnedInCurrentBatch = []; 
         let currentAudio = null;
+        let audioUnlocked = false;
 
         // 全局 DOM 元素引用
         let modeTitle, appContent, progress;
+
+        // 移动端音频解锁：在第一次点击时播放一段静音
+        function unlockAudio() {
+            if (audioUnlocked) return;
+            const silentBuffer = 'data:audio/wav;base64,UklGRigAAABXQVZFRm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA==';
+            const audio = new Audio(silentBuffer);
+            audio.play().then(() => {
+                audioUnlocked = true;
+                console.log('音频已解锁');
+            }).catch(e => console.warn('音频解锁失败', e));
+        }
 
         // 从 localStorage 加载已背单词 ID 列表
         function getLearnedIds() {
@@ -128,7 +148,7 @@
             progress.style.width = `${(learnedCount / totalCount) * 100}%`;
 
             let startButtonHtml = `
-                <button onclick="startDailyTask()" class="w-full py-5 baicizhan-green text-white rounded-3xl font-bold text-xl shadow-lg shadow-emerald-200 transform transition-transform active:scale-95">
+                <button onclick="unlockAudio(); startDailyTask()" class="w-full py-5 baicizhan-green text-white rounded-3xl font-bold text-xl shadow-lg shadow-emerald-200 transform transition-transform active:scale-95">
                     ${remainingCount > 0 ? '开始今日任务' : '全部背完啦！重新复习'}
                 </button>
             `;
@@ -139,10 +159,10 @@
                 if (sessionData.wordData && sessionData.wordData.length > 0) {
                     startButtonHtml = `
                         <div class="w-full space-y-3">
-                            <button onclick="resumeSession()" class="w-full py-5 baicizhan-green text-white rounded-3xl font-bold text-xl shadow-lg shadow-emerald-200 transform transition-transform active:scale-95">
+                            <button onclick="unlockAudio(); resumeSession()" class="w-full py-5 baicizhan-green text-white rounded-3xl font-bold text-xl shadow-lg shadow-emerald-200 transform transition-transform active:scale-95">
                                 继续学习进度
                             </button>
-                            <button onclick="startDailyTask()" class="w-full py-3 bg-gray-100 text-gray-500 rounded-2xl font-bold text-sm hover:bg-gray-200 transition-colors">
+                            <button onclick="unlockAudio(); startDailyTask()" class="w-full py-3 bg-gray-100 text-gray-500 rounded-2xl font-bold text-sm hover:bg-gray-200 transition-colors">
                                 重新开始新任务
                             </button>
                         </div>
@@ -239,9 +259,12 @@
             
             // 停止当前所有正在进行的系统 TTS
             window.speechSynthesis.cancel();
-            // 如果有正在播放的 Audio 对象，也停止它
+            
+            // 停止当前正在播放的音频
             if (currentAudio) {
                 currentAudio.pause();
+                currentAudio.onended = null;
+                currentAudio.onerror = null;
                 currentAudio = null;
             }
 
@@ -255,13 +278,13 @@
 
             function tryNextSource() {
                 if (sourceIndex >= sources.length) {
-                    // 所有在线音源失败，回退到系统 TTS
                     fallbackToSystemTTS();
                     return;
                 }
 
                 const url = sources[sourceIndex];
-                const audio = new Audio(url);
+                const audio = new Audio();
+                audio.src = url;
                 currentAudio = audio;
                 let count = 0;
 
@@ -269,38 +292,43 @@
                     count++;
                     if (count < times) {
                         audio.currentTime = 0;
-                        audio.play();
+                        audio.play().catch(e => console.warn('循环播放失败', e));
                     } else {
                         currentAudio = null;
                         if (callback) callback();
                     }
                 };
 
-                audio.onerror = () => {
-                    console.warn(`音源 ${sourceIndex + 1} 加载失败 (可能是 ORB 拦截或接口限制)，尝试下一个...`);
+                audio.onerror = (err) => {
+                    console.warn(`音源 ${sourceIndex + 1} 加载失败`, err);
                     sourceIndex++;
                     tryNextSource();
                 };
 
+                // 在移动端，如果不是由直接点击触发的 play() 可能会失败
                 audio.play().catch(e => {
-                    // 可能是自动播放策略拦截，如果是第一个音源报错，尝试第二个
-                    if (sourceIndex === 0) {
-                        console.warn('播放被拦截或加载失败，切换音源');
-                        sourceIndex++;
-                        tryNextSource();
-                    }
+                    console.warn(`音源 ${sourceIndex + 1} 播放被拦截`, e);
+                    // 尝试下一个音源，或者直接 fallback
+                    sourceIndex++;
+                    tryNextSource();
                 });
             }
 
             function fallbackToSystemTTS() {
-                console.warn('所有在线音源加载失败，回退到系统本地 TTS');
-                const utterance = new SpeechSynthesisUtterance(text);
-                utterance.lang = 'en-US';
-                utterance.rate = 0.9;
-                utterance.onend = () => {
+                try {
+                    const utterance = new SpeechSynthesisUtterance(text);
+                    utterance.lang = 'en-US';
+                    utterance.rate = 0.9;
+                    utterance.onend = () => { if (callback) callback(); };
+                    utterance.onerror = (e) => { 
+                        console.warn('系统 TTS 报错', e);
+                        if (callback) callback(); 
+                    };
+                    window.speechSynthesis.speak(utterance);
+                } catch (e) {
+                    console.error('所有朗读方式均失效', e);
                     if (callback) callback();
-                };
-                window.speechSynthesis.speak(utterance);
+                }
             }
 
             tryNextSource();
@@ -318,7 +346,7 @@
                     <div class="flex items-center justify-center gap-4 mb-2">
                         <h2 class="text-4xl font-bold tracking-tight">${data.word}</h2>
                         <!-- 单词发音按钮 -->
-                        <button onclick="speak('${data.word}', 1)" class="w-10 h-10 rounded-full bg-emerald-50 text-emerald-500 flex items-center justify-center hover:bg-emerald-100 transition-colors">
+                        <button onclick="unlockAudio(); speak('${data.word}', 1)" class="w-10 h-10 rounded-full bg-emerald-50 text-emerald-500 flex items-center justify-center hover:bg-emerald-100 transition-colors">
                             <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><path d="M9.383 3.076A1 1 0 0110 4v12a1 1 0 01-1.707.707L4.586 13H2a1 1 0 01-1-1V8a1 1 0 011-1h2.586l3.707-3.707a1 1 0 011.09-.217zM14.657 2.929a1 1 0 011.414 0A9.972 9.972 0 0119 10a9.972 9.972 0 01-2.929 7.071 1 1 0 01-1.414-1.414A7.971 7.971 0 0017 10c0-2.21-.894-4.208-2.343-5.657a1 1 0 010-1.414zm-2.829 2.828a1 1 0 011.415 0A5.983 5.983 0 0115 10a5.984 5.984 0 01-1.757 4.243 1 1 0 01-1.415-1.415A3.984 3.984 0 0013 10a3.983 3.983 0 00-1.172-2.828a1 1 0 010-1.415z"></path></svg>
                         </button>
                     </div>
@@ -326,7 +354,7 @@
                 </div>
                 <div class="grid grid-cols-1 gap-4 mb-8">
                     ${data.options.map((opt, idx) => `
-                        <button onclick="checkChoice('${opt}', this)" class="choice-btn w-full p-4 rounded-2xl border-2 border-gray-100 hover:border-emerald-400 hover:bg-emerald-50 text-left font-medium transition-all flex items-center justify-between group">
+                        <button onclick="unlockAudio(); checkChoice('${opt}', this)" class="choice-btn w-full p-4 rounded-2xl border-2 border-gray-100 hover:border-emerald-400 hover:bg-emerald-50 text-left font-medium transition-all flex items-center justify-between group">
                             <span>${opt}</span>
                             <span class="text-gray-300 group-hover:text-emerald-400">${String.fromCharCode(65 + idx)}</span>
                         </button>
@@ -539,7 +567,7 @@
                         <input type="text" id="spelling-input" class="w-full text-3xl font-bold text-center border-b-2 border-gray-200 focus:border-emerald-400 outline-none py-4 transition-colors" placeholder="拼写单词" autocomplete="off">
                         <div id="error-hint" class="text-red-500 text-sm text-center mt-2 hidden"></div>
                     </div>
-                    <button onclick="checkSpelling()" class="w-full py-4 baicizhan-green text-white rounded-2xl font-bold">检查拼写</button>
+                    <button onclick="unlockAudio(); checkSpelling()" class="w-full py-4 baicizhan-green text-white rounded-2xl font-bold">检查拼写</button>
                 </div>
             `;
             document.getElementById('spelling-input').focus();
