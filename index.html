@@ -305,11 +305,14 @@
                 window.speechSynthesis.cancel();
             }
             
-            // 停止当前正在播放的音频
+            // 准备播放
             try {
                 currentAudio.pause();
                 currentAudio.onended = null;
                 currentAudio.onerror = null;
+                // 必须重置 src 才能在某些手机端触发重新加载
+                currentAudio.removeAttribute('src');
+                currentAudio.load();
             } catch (e) {}
 
             // 备选音源列表 (HTTPS)
@@ -327,6 +330,7 @@
                 }
 
                 try {
+                    log(`尝试音源 ${sourceIndex + 1}`);
                     currentAudio.src = sources[sourceIndex];
                     let count = 0;
 
@@ -336,6 +340,7 @@
                             currentAudio.currentTime = 0;
                             currentAudio.play().catch(e => log('循环播放失败'));
                         } else {
+                            log('朗读结束，执行回调');
                             if (callback) callback();
                         }
                     };
@@ -349,7 +354,8 @@
                     const playPromise = currentAudio.play();
                     if (playPromise !== undefined) {
                         playPromise.catch(e => {
-                            log(`音源 ${sourceIndex + 1} 被拦截`);
+                            log(`音源 ${sourceIndex + 1} 被拦截: ` + e.message);
+                            // 如果是被拦截，可能是因为异步调用，尝试直接 fallback
                             sourceIndex++;
                             tryNextSource();
                         });
@@ -421,10 +427,13 @@
                 </div>
             `;
 
-            // 进入新单词 0.5 秒后自动朗读情景句子，不再朗读单词
+            // 进入新单词 0.5 秒后自动朗读：先朗读单词，单词读完后自动朗读情景句子
             setTimeout(() => {
-                const plainSentence = data.sentence.replace(/<[^>]*>/g, '');
-                speak(plainSentence, 1);
+                log('执行自动朗读逻辑');
+                speak(data.word, 1, () => {
+                    const plainSentence = data.sentence.replace(/<[^>]*>/g, '');
+                    speak(plainSentence, 1);
+                });
             }, 500);
         }
 
@@ -585,35 +594,42 @@
                     `).join('')}
                 </div>
             `;
-            // 跳转后等待 0.5 秒再读诵单词
+            // 自动播放单词读音
             setTimeout(() => {
+                log('听音选词自动播放');
                 speak(data.word, 1);
             }, 500);
         }
 
         function checkZhToEn(selected, btnElement) {
-            const correctWord = learnedInCurrentBatch[0].word;
-            if (selected === correctWord) {
-                btnElement.classList.add('bg-emerald-500', 'text-white', 'border-emerald-500');
-                document.querySelectorAll('.zh-en-btn').forEach(b => b.style.pointerEvents = 'none');
-                
-                setTimeout(() => {
-                    learnedInCurrentBatch.shift(); // 移除已复习的
-                    if (learnedInCurrentBatch.length > 0) {
-                        initZhToEnReview();
-                    } else {
-                        // 批次复习完成
-                        if (currentIndex < wordData.length) {
-                            initChoiceMode();
+            try {
+                const correctWord = learnedInCurrentBatch[0].word;
+                if (selected === correctWord) {
+                    btnElement.classList.add('bg-emerald-500', 'text-white', 'border-emerald-500');
+                    document.querySelectorAll('.zh-en-btn').forEach(b => b.style.pointerEvents = 'none');
+                    
+                    setTimeout(() => {
+                        learnedInCurrentBatch.shift(); // 移除已复习的
+                        if (learnedInCurrentBatch.length > 0) {
+                            initZhToEnReview();
                         } else {
-                            currentIndex = 0;
-                            initSpellingMode();
+                            // 批次复习完成
+                            if (currentIndex < wordData.length) {
+                                initChoiceMode();
+                            } else {
+                                log('进入拼写模式');
+                                currentIndex = 0;
+                                initSpellingMode();
+                            }
                         }
-                    }
-                }, 500);
-            } else {
-                btnElement.classList.add('bg-red-100', 'border-red-400', 'text-red-500');
-                speak(correctWord, 1);
+                    }, 500);
+                } else {
+                    btnElement.classList.add('bg-red-100', 'border-red-400', 'text-red-500');
+                    speak(correctWord, 1);
+                }
+            } catch (e) {
+                log('checkZhToEn报错: ' + e.message);
+                nextWord();
             }
         }
 
@@ -628,10 +644,18 @@
             appContent.innerHTML = `
                 <div class="text-center mb-10 mt-4">
                     <p class="text-2xl font-bold text-gray-800 mb-2">${data.meaning}</p>
+                    <button onclick="unlockAudio(); speak('${data.word}', 1)" class="text-emerald-500 text-sm font-medium hover:underline">听读音</button>
                     <div id="spelling-hint-container" class="min-h-[40px]">
                         <p id="spelling-phonetic" class="text-gray-400 font-mono mt-2 hidden">${data.phonetic}</p>
                     </div>
                 </div>
+            `;
+            
+            // 拼写模式自动朗读一次单词
+            setTimeout(() => {
+                log('拼写模式自动播放');
+                speak(data.word, 1);
+            }, 500);
                 
                 <div class="flex flex-col gap-6">
                     <div class="relative">
