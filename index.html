@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>四级单词背诵 - 百词斩风格</title>
+    <!-- 引入外部词库 -->
+    <script src="data.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Noto Sans SC', sans-serif;
+            background-color: #F7F9FB;
+        }
+        .card-shadow {
+            box-shadow: 0 8px 30px rgba(0,0,0,0.04);
+        }
+        .choice-btn:active {
+            transform: scale(0.98);
+        }
+        .highlight-word {
+            color: #ef4444;
+            font-weight: bold;
+            text-decoration: underline;
+        }
+        .baicizhan-green {
+            background-color: #2DBC94;
+        }
+        .baicizhan-text-green {
+            color: #2DBC94;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col items-center justify-center p-4">
+
+    <!-- Main Container -->
+    <div id="app" class="w-full max-w-md bg-white rounded-3xl min-h-[600px] card-shadow overflow-hidden flex flex-col relative">
+        
+        <!-- Progress Bar -->
+        <div class="h-1.5 w-full bg-gray-100">
+            <div id="progress" class="h-full baicizhan-green transition-all duration-300" style="width: 0%"></div>
+        </div>
+
+        <!-- Header -->
+        <div class="p-6 flex justify-between items-center">
+            <button id="back-btn" class="text-gray-400 hover:text-gray-600">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
+            </button>
+            <span id="mode-title" class="text-sm font-medium text-gray-500 tracking-wider">选择单词含义</span>
+            <div class="w-6"></div>
+        </div>
+
+        <!-- Content Area -->
+        <div id="content" class="flex-1 flex flex-col px-8 pb-8">
+            <!-- Dynamic content will be injected here -->
+        </div>
+
+        <!-- Floating Feedback -->
+        <div id="feedback" class="absolute inset-0 flex items-center justify-center pointer-events-none opacity-0 transition-opacity duration-200">
+            <div id="feedback-icon" class="w-24 h-24 rounded-full flex items-center justify-center">
+                <!-- SVG icons for correct/wrong -->
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 核心配置
+        const DAILY_TARGET = 30; // 每天背诵目标
+        let wordData = []; // 当前任务单词池
+        let currentIndex = 0;
+        let learnedWords = [];
+        let currentMode = 'choice'; // choice, zh-to-en, spelling, reading
+        let spellingErrors = 0;
+        let batchSize = 10; 
+        let learnedInCurrentBatch = []; 
+        let currentAudio = null;
+
+        // 全局 DOM 元素引用
+        let modeTitle, appContent, progress;
+
+        // 从 localStorage 加载已背单词 ID 列表
+        function getLearnedIds() {
+            const data = localStorage.getItem('learned_word_ids');
+            return data ? JSON.parse(data) : [];
+        }
+
+        // 保存已背单词 ID
+        function saveLearnedId(id) {
+            const ids = getLearnedIds();
+            if (!ids.includes(id)) {
+                ids.push(id);
+                localStorage.setItem('learned_word_ids', JSON.stringify(ids));
+            }
+        }
+
+        // 保存当前 session 进度
+        function saveSession() {
+            const session = {
+                wordData: wordData,
+                currentIndex: currentIndex,
+                currentMode: currentMode,
+                learnedWords: learnedWords,
+                learnedInCurrentBatch: learnedInCurrentBatch
+            };
+            localStorage.setItem('current_session', JSON.stringify(session));
+        }
+
+        // 清除当前 session
+        function clearSession() {
+            localStorage.removeItem('current_session');
+        }
+
+        // 初始化开始界面
+        function initStartScreen() {
+            const learnedIds = getLearnedIds();
+            const session = localStorage.getItem('current_session');
+            const totalCount = cet4Words.length;
+            const targetCount = 739; // 用户要求的核心词汇总量
+            const learnedCount = learnedIds.length;
+            const remainingCount = totalCount - learnedCount;
+
+            modeTitle = document.getElementById('mode-title');
+            appContent = document.getElementById('content');
+            progress = document.getElementById('progress');
+            
+            modeTitle.innerText = "四级核心词库";
+            progress.style.width = `${(learnedCount / totalCount) * 100}%`;
+
+            let startButtonHtml = `
+                <button onclick="startDailyTask()" class="w-full py-5 baicizhan-green text-white rounded-3xl font-bold text-xl shadow-lg shadow-emerald-200 transform transition-transform active:scale-95">
+                    ${remainingCount > 0 ? '开始今日任务' : '全部背完啦！重新复习'}
+                </button>
+            `;
+
+            // 如果有正在进行的 session，提供恢复按钮
+            if (session) {
+                const sessionData = JSON.parse(session);
+                if (sessionData.wordData && sessionData.wordData.length > 0) {
+                    startButtonHtml = `
+                        <div class="w-full space-y-3">
+                            <button onclick="resumeSession()" class="w-full py-5 baicizhan-green text-white rounded-3xl font-bold text-xl shadow-lg shadow-emerald-200 transform transition-transform active:scale-95">
+                                继续学习进度
+                            </button>
+                            <button onclick="startDailyTask()" class="w-full py-3 bg-gray-100 text-gray-500 rounded-2xl font-bold text-sm hover:bg-gray-200 transition-colors">
+                                重新开始新任务
+                            </button>
+                        </div>
+                    `;
+                }
+            }
+
+            appContent.innerHTML = `
+                <div class="flex-1 flex flex-col items-center justify-center text-center space-y-8 py-10">
+                    <div class="w-32 h-32 baicizhan-green rounded-full flex items-center justify-center shadow-xl shadow-emerald-100">
+                        <svg class="w-16 h-16 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"></path></svg>
+                    </div>
+                    
+                    <div>
+                        <h1 class="text-3xl font-extrabold text-gray-800 mb-2">百词斩 · 四级核心</h1>
+                        <p class="text-gray-500 italic mb-2 text-sm">目标词库：${targetCount} 核心词汇</p>
+                        <p class="text-gray-500">当前进度 <span class="text-emerald-500 font-bold">${learnedCount}</span> / ${totalCount} 词</p>
+                    </div>
+
+                    <div class="w-full grid grid-cols-2 gap-4">
+                        <div class="bg-gray-50 p-4 rounded-2xl border border-gray-100">
+                            <p class="text-xs text-gray-400 uppercase font-bold tracking-wider mb-1">剩余未背</p>
+                            <p class="text-2xl font-bold text-gray-700">${remainingCount}</p>
+                        </div>
+                        <div class="bg-gray-50 p-4 rounded-2xl border border-gray-100">
+                            <p class="text-xs text-gray-400 uppercase font-bold tracking-wider mb-1">今日目标</p>
+                            <p class="text-2xl font-bold text-gray-700">${Math.min(remainingCount, DAILY_TARGET)}</p>
+                        </div>
+                    </div>
+
+                    ${startButtonHtml}
+                    
+                    <button id="reset-btn" onclick="clearProgress()" class="text-gray-300 text-xs hover:text-red-400 transition-colors">清除学习进度</button>
+                </div>
+            `;
+        }
+
+        // 恢复上次 session
+        function resumeSession() {
+            const session = localStorage.getItem('current_session');
+            if (session) {
+                const sessionData = JSON.parse(session);
+                wordData = sessionData.wordData;
+                currentIndex = sessionData.currentIndex;
+                currentMode = sessionData.currentMode;
+                learnedWords = sessionData.learnedWords;
+                learnedInCurrentBatch = sessionData.learnedInCurrentBatch;
+
+                // 根据保存的模式进入相应界面
+                if (currentMode === 'choice') initChoiceMode();
+                else if (currentMode === 'zh-to-en') initZhToEnReview();
+                else if (currentMode === 'spelling') initSpellingMode();
+                else if (currentMode === 'reading') initReadingMode();
+                else initChoiceMode();
+            }
+        }
+
+        // 清除进度
+        function clearProgress() {
+            if(confirm('确定要清除所有学习进度吗？（包括永久进度和当前会话）')) {
+                localStorage.removeItem('learned_word_ids');
+                localStorage.removeItem('current_session');
+                location.reload();
+            }
+        }
+
+        // 开始每日任务：随机选取 30 个未背单词
+        function startDailyTask() {
+            const learnedIds = getLearnedIds();
+            let unlearned = cet4Words.filter(w => !learnedIds.includes(w.id));
+            
+            if (unlearned.length === 0) {
+                unlearned = [...cet4Words];
+            }
+
+            // 随机洗牌并选取
+            wordData = unlearned
+                .sort(() => 0.5 - Math.random())
+                .slice(0, DAILY_TARGET);
+            
+            currentIndex = 0;
+            learnedWords = [];
+            learnedInCurrentBatch = [];
+            
+            // 立即保存初始 session
+            saveSession();
+            
+            initChoiceMode();
+        }
+
+        // 增强版语音朗读函数：增加多音源备份（有道 + 百度 + 系统 TTS）
+        function speak(text, times = 1, callback = null) {
+            if (!text) return;
+            
+            // 停止当前所有正在进行的系统 TTS
+            window.speechSynthesis.cancel();
+            // 如果有正在播放的 Audio 对象，也停止它
+            if (currentAudio) {
+                currentAudio.pause();
+                currentAudio = null;
+            }
+
+            // 备选音源列表
+            const sources = [
+                `https://dict.youdao.com/dictvoice?audio=${encodeURIComponent(text)}&type=2&client=anywhere`,
+                `https://tts.baidu.com/text2audio?lan=en&ie=UTF-8&text=${encodeURIComponent(text)}`
+            ];
+            
+            let sourceIndex = 0;
+
+            function tryNextSource() {
+                if (sourceIndex >= sources.length) {
+                    // 所有在线音源失败，回退到系统 TTS
+                    fallbackToSystemTTS();
+                    return;
+                }
+
+                const url = sources[sourceIndex];
+                const audio = new Audio(url);
+                currentAudio = audio;
+                let count = 0;
+
+                audio.onended = () => {
+                    count++;
+                    if (count < times) {
+                        audio.currentTime = 0;
+                        audio.play();
+                    } else {
+                        currentAudio = null;
+                        if (callback) callback();
+                    }
+                };
+
+                audio.onerror = () => {
+                    console.warn(`音源 ${sourceIndex + 1} 加载失败 (可能是 ORB 拦截或接口限制)，尝试下一个...`);
+                    sourceIndex++;
+                    tryNextSource();
+                };
+
+                audio.play().catch(e => {
+                    // 可能是自动播放策略拦截，如果是第一个音源报错，尝试第二个
+                    if (sourceIndex === 0) {
+                        console.warn('播放被拦截或加载失败，切换音源');
+                        sourceIndex++;
+                        tryNextSource();
+                    }
+                });
+            }
+
+            function fallbackToSystemTTS() {
+                console.warn('所有在线音源加载失败，回退到系统本地 TTS');
+                const utterance = new SpeechSynthesisUtterance(text);
+                utterance.lang = 'en-US';
+                utterance.rate = 0.9;
+                utterance.onend = () => {
+                    if (callback) callback();
+                };
+                window.speechSynthesis.speak(utterance);
+            }
+
+            tryNextSource();
+        }
+
+        // 初始化选择模式
+        function initChoiceMode() {
+            const data = wordData[currentIndex];
+            modeTitle.innerText = "选择单词含义";
+            currentMode = 'choice';
+            saveSession();
+            
+            appContent.innerHTML = `
+                <div class="text-center mb-8 relative">
+                    <div class="flex items-center justify-center gap-4 mb-2">
+                        <h2 class="text-4xl font-bold tracking-tight">${data.word}</h2>
+                        <!-- 单词发音按钮 -->
+                        <button onclick="speak('${data.word}', 1)" class="w-10 h-10 rounded-full bg-emerald-50 text-emerald-500 flex items-center justify-center hover:bg-emerald-100 transition-colors">
+                            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><path d="M9.383 3.076A1 1 0 0110 4v12a1 1 0 01-1.707.707L4.586 13H2a1 1 0 01-1-1V8a1 1 0 011-1h2.586l3.707-3.707a1 1 0 011.09-.217zM14.657 2.929a1 1 0 011.414 0A9.972 9.972 0 0119 10a9.972 9.972 0 01-2.929 7.071 1 1 0 01-1.414-1.414A7.971 7.971 0 0017 10c0-2.21-.894-4.208-2.343-5.657a1 1 0 010-1.414zm-2.829 2.828a1 1 0 011.415 0A5.983 5.983 0 0115 10a5.984 5.984 0 01-1.757 4.243 1 1 0 01-1.415-1.415A3.984 3.984 0 0013 10a3.983 3.983 0 00-1.172-2.828a1 1 0 010-1.415z"></path></svg>
+                        </button>
+                    </div>
+                    <p class="text-gray-400 font-mono">${data.phonetic}</p>
+                </div>
+                <div class="grid grid-cols-1 gap-4 mb-8">
+                    ${data.options.map((opt, idx) => `
+                        <button onclick="checkChoice('${opt}', this)" class="choice-btn w-full p-4 rounded-2xl border-2 border-gray-100 hover:border-emerald-400 hover:bg-emerald-50 text-left font-medium transition-all flex items-center justify-between group">
+                            <span>${opt}</span>
+                            <span class="text-gray-300 group-hover:text-emerald-400">${String.fromCharCode(65 + idx)}</span>
+                        </button>
+                    `).join('')}
+                </div>
+                <!-- 始终显示情景句子 (仅显示英文，不显示翻译) -->
+                <div id="sentence-box" class="animate-fade-in">
+                    <div class="bg-gray-50 p-4 rounded-2xl border-l-4 border-emerald-400">
+                        <p class="text-gray-800 leading-relaxed">${data.sentence}</p>
+                    </div>
+                </div>
+            `;
+
+            // 进入新单词 0.5 秒后自动朗读情景句子，不再朗读单词
+            setTimeout(() => {
+                const plainSentence = data.sentence.replace(/<[^>]*>/g, '');
+                speak(plainSentence, 1);
+            }, 500);
+        }
+
+        // 检查选择
+        function checkChoice(selected, btnElement) {
+            const data = wordData[currentIndex];
+            if (selected === data.meaning) {
+                // 视觉反馈：变绿并禁用点击
+                btnElement.classList.remove('hover:border-emerald-400', 'hover:bg-emerald-50');
+                btnElement.classList.add('bg-emerald-500', 'text-white', 'border-emerald-500');
+                document.querySelectorAll('.choice-btn').forEach(btn => btn.style.pointerEvents = 'none');
+                
+                // 立即中止所有正在进行的朗读（包括当前正在读的情景句子）
+                if (currentAudio) {
+                    currentAudio.pause();
+                    currentAudio = null;
+                }
+                window.speechSynthesis.cancel();
+
+                // 选对后等待 0.5 秒直接跳转
+                setTimeout(() => {
+                    nextWord();
+                }, 500);
+            } else {
+                showErrorDetail();
+            }
+        }
+
+        // 显示错题详情界面
+        function showErrorDetail() {
+            const data = wordData[currentIndex];
+            modeTitle.innerText = "单词详情 (记错了哦)";
+            
+            appContent.innerHTML = `
+                <div class="text-center mb-6">
+                    <h2 class="text-4xl font-bold mb-2 tracking-tight text-red-500">${data.word}</h2>
+                    <p class="text-gray-400 font-mono">${data.phonetic}</p>
+                </div>
+                
+                <div class="space-y-6 overflow-y-auto pr-1 max-h-[400px]">
+                    <!-- 情景句子 -->
+                    <div class="bg-gray-50 p-4 rounded-2xl border-l-4 border-emerald-400">
+                        <p class="text-xs font-bold text-emerald-500 uppercase tracking-wider mb-2">情景例句</p>
+                        <p class="text-gray-800 leading-relaxed mb-1">${data.sentence}</p>
+                        <p class="text-gray-500 text-sm">${data.translation}</p>
+                    </div>
+
+                    <!-- 常考释义 -->
+                    <div class="bg-gray-50 p-4 rounded-2xl border-l-4 border-blue-400">
+                        <p class="text-xs font-bold text-blue-500 uppercase tracking-wider mb-2">常考释义</p>
+                        <ul class="list-disc list-inside text-gray-700 space-y-1">
+                            ${data.commonMeanings.map(m => `<li>${m}</li>`).join('')}
+                        </ul>
+                    </div>
+
+                    <!-- 衍生短语 -->
+                    <div class="bg-gray-50 p-4 rounded-2xl border-l-4 border-purple-400">
+                        <p class="text-xs font-bold text-purple-500 uppercase tracking-wider mb-2">常用短语</p>
+                        <ul class="list-disc list-inside text-gray-700 space-y-1">
+                            ${data.phrases.map(p => `<li>${p}</li>`).join('')}
+                        </ul>
+                    </div>
+                </div>
+
+                <button onclick="initChoiceMode()" class="w-full mt-8 py-4 bg-gray-900 text-white rounded-2xl font-bold shadow-lg">我记住了，再试一次</button>
+            `;
+            
+            // 选错时也读一遍单词和句子帮助记忆
+            speak(data.word, 1, () => {
+                const plainSentence = data.sentence.replace(/<[^>]*>/g, '');
+                speak(plainSentence, 1);
+            });
+        }
+
+        // 下一个单词
+        function nextWord() {
+            const finishedWord = wordData[currentIndex];
+            learnedWords.push(finishedWord);
+            learnedInCurrentBatch.push(finishedWord);
+            
+            // 永久保存该单词的进度到 localStorage
+            saveLearnedId(finishedWord.id);
+            
+            currentIndex++;
+            // 保存当前 session 进度
+            saveSession();
+            
+            updateProgress();
+
+            // 每 10 个单词背完后，或者所有单词背完后，进入“中文选英文”模式
+            if (learnedInCurrentBatch.length === batchSize || currentIndex === wordData.length) {
+                if (learnedInCurrentBatch.length > 0) {
+                    initZhToEnReview();
+                    return;
+                }
+            }
+
+            if (currentIndex < wordData.length) {
+                initChoiceMode();
+            } else {
+                // 如果已经背完所有单词且复习完，进入拼写模式
+                currentIndex = 0;
+                initSpellingMode();
+            }
+        }
+
+        // 中文选英文复习模式 (听音选词)
+        function initZhToEnReview() {
+            if (learnedInCurrentBatch.length === 0) {
+                // 如果当前批次为空，则根据进度决定下一步
+                if (currentIndex < wordData.length) initChoiceMode();
+                else { currentIndex = 0; initSpellingMode(); }
+                return;
+            }
+
+            modeTitle.innerText = "阶段复习：中文选英文";
+            currentMode = 'zh-to-en';
+            saveSession();
+            
+            const data = learnedInCurrentBatch[0]; // 复习当前批次的第一个
+            
+            // 随机干扰项（从已学过的单词中抽取，如果不足则从词库随机）
+            let allOtherWords = cet4Words.filter(w => w.word !== data.word);
+            let distractorWords = allOtherWords.sort(() => 0.5 - Math.random()).slice(0, 3);
+            let options = [data.word, ...distractorWords.map(w => w.word)].sort(() => 0.5 - Math.random());
+
+            appContent.innerHTML = `
+                <div class="text-center mb-12">
+                    <p class="text-sm text-gray-400 mb-4 tracking-widest uppercase">根据中文释义听音选词</p>
+                    <h2 class="text-4xl font-bold mb-6 text-gray-800">${data.meaning}</h2>
+                    <button onclick="speak('${data.word}', 1)" class="w-20 h-20 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center mx-auto hover:bg-emerald-200 transition-colors">
+                        <svg class="w-10 h-10" fill="currentColor" viewBox="0 0 20 20"><path d="M9.383 3.076A1 1 0 0110 4v12a1 1 0 01-1.707.707L4.586 13H2a1 1 0 01-1-1V8a1 1 0 011-1h2.586l3.707-3.707a1 1 0 011.09-.217zM14.657 2.929a1 1 0 011.414 0A9.972 9.972 0 0119 10a9.972 9.972 0 01-2.929 7.071 1 1 0 01-1.414-1.414A7.971 7.971 0 0017 10c0-2.21-.894-4.208-2.343-5.657a1 1 0 010-1.414zm-2.829 2.828a1 1 0 011.415 0A5.983 5.983 0 0115 10a5.984 5.984 0 01-1.757 4.243 1 1 0 01-1.415-1.415A3.984 3.984 0 0013 10a3.983 3.983 0 00-1.172-2.828a1 1 0 010-1.415z"></path></svg>
+                    </button>
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                    ${options.map(opt => `
+                        <button onclick="checkZhToEn('${opt}', this)" class="zh-en-btn p-5 rounded-2xl border-2 border-gray-100 hover:border-emerald-400 hover:bg-emerald-50 text-center font-bold text-xl transition-all">
+                            ${opt}
+                        </button>
+                    `).join('')}
+                </div>
+            `;
+            // 跳转后等待 0.5 秒再读诵单词
+            setTimeout(() => {
+                speak(data.word, 1);
+            }, 500);
+        }
+
+        function checkZhToEn(selected, btnElement) {
+            const correctWord = learnedInCurrentBatch[0].word;
+            if (selected === correctWord) {
+                btnElement.classList.add('bg-emerald-500', 'text-white', 'border-emerald-500');
+                document.querySelectorAll('.zh-en-btn').forEach(b => b.style.pointerEvents = 'none');
+                
+                setTimeout(() => {
+                    learnedInCurrentBatch.shift(); // 移除已复习的
+                    if (learnedInCurrentBatch.length > 0) {
+                        initZhToEnReview();
+                    } else {
+                        // 批次复习完成
+                        if (currentIndex < wordData.length) {
+                            initChoiceMode();
+                        } else {
+                            currentIndex = 0;
+                            initSpellingMode();
+                        }
+                    }
+                }, 500);
+            } else {
+                btnElement.classList.add('bg-red-100', 'border-red-400', 'text-red-500');
+                speak(correctWord, 1);
+            }
+        }
+
+        // 拼写模式
+        function initSpellingMode() {
+            const data = wordData[currentIndex];
+            modeTitle.innerText = "单词拼写练习";
+            currentMode = 'spelling';
+            spellingErrors = 0;
+            saveSession();
+
+            appContent.innerHTML = `
+                <div class="text-center mb-10 mt-4">
+                    <p class="text-2xl font-bold text-gray-800 mb-2">${data.meaning}</p>
+                    <div id="spelling-hint-container" class="min-h-[40px]">
+                        <p id="spelling-phonetic" class="text-gray-400 font-mono mt-2 hidden">${data.phonetic}</p>
+                    </div>
+                </div>
+                
+                <div class="flex flex-col gap-6">
+                    <div class="relative">
+                        <input type="text" id="spelling-input" class="w-full text-3xl font-bold text-center border-b-2 border-gray-200 focus:border-emerald-400 outline-none py-4 transition-colors" placeholder="拼写单词" autocomplete="off">
+                        <div id="error-hint" class="text-red-500 text-sm text-center mt-2 hidden"></div>
+                    </div>
+                    <button onclick="checkSpelling()" class="w-full py-4 baicizhan-green text-white rounded-2xl font-bold">检查拼写</button>
+                </div>
+            `;
+            document.getElementById('spelling-input').focus();
+        }
+
+        function checkSpelling() {
+            const data = wordData[currentIndex];
+            const input = document.getElementById('spelling-input').value.trim().toLowerCase();
+            const errorHint = document.getElementById('error-hint');
+            const phonetic = document.getElementById('spelling-phonetic');
+
+            if (input === data.word.toLowerCase()) {
+                currentIndex++;
+                updateProgress();
+                if (currentIndex < wordData.length) {
+                    initSpellingMode();
+                } else {
+                    initReadingMode();
+                }
+            } else {
+                spellingErrors++;
+                errorHint.classList.remove('hidden');
+                
+                if (spellingErrors === 1) {
+                    errorHint.innerText = "拼写错误 (1/3)";
+                    phonetic.classList.remove('hidden'); // 第一次错误：显示音标
+                } else if (spellingErrors === 2) {
+                    errorHint.innerText = "拼写错误 (2/3)";
+                    speak(data.word, 3); // 第二次错误：读诵单词三次
+                } else if (spellingErrors >= 3) {
+                    errorHint.innerHTML = `正确单词是: <span class="font-bold underline">${data.word}</span>`; // 第三次错误：显示正确单词
+                }
+            }
+        }
+
+        // 阅读理解模式
+        function initReadingMode() {
+            modeTitle.innerText = "四级真题模拟：阅读理解";
+            currentMode = 'reading';
+            saveSession();
+            updateProgress(100);
+
+            // 四级难度短文 (包含所有已背单词：abandon, brilliant, consequence, delicate, efficient)
+            const passageText = `
+                In the modern era of rapid technological advancement, the way we approach career development has undergone a significant transformation. Many educational experts suggest that it is a <span class="highlight-word">brilliant</span> strategy to evaluate one's professional goals regularly. This <span class="highlight-word">efficient</span> way of self-assessment allows individuals to adapt to the ever-changing job market without wasting precious time. 
+                <br><br>
+                However, the reality is not always optimistic. In times of economic recession, the balance of the job market becomes extremely <span class="highlight-word">delicate</span>. Some talented individuals are forced to <span class="highlight-word">abandon</span> their long-held dreams or creative projects to seek more stable employment. While this might solve immediate financial problems, such a difficult choice often carries a long-term <span class="highlight-word">consequence</span> for their overall life satisfaction and mental well-being. 
+                <br><br>
+                Therefore, the challenge for today's workforce is to find a balance between pursuing one's passion and maintaining financial security. Understanding the potential outcomes of our decisions is crucial for building a sustainable and rewarding career in the 21st century.
+            `;
+
+            appContent.innerHTML = `
+                <div class="flex-1 overflow-y-auto pr-2 space-y-8">
+                    <div class="bg-gray-50 p-6 rounded-3xl border border-gray-100 shadow-inner">
+                        <p class="text-gray-800 text-lg leading-relaxed text-justify italic">${passageText}</p>
+                    </div>
+                    <div class="space-y-6">
+                        <h3 class="text-xl font-bold text-gray-800 border-l-4 border-emerald-500 pl-3">理解测试</h3>
+                        <div class="bg-white p-5 rounded-2xl border border-gray-100 shadow-sm">
+                            <p class="font-bold text-gray-800 mb-4">What is the main idea of the passage?</p>
+                            <div class="grid grid-cols-1 gap-3">
+                                <button onclick="this.classList.add('bg-emerald-500','text-white')" class="w-full p-3 rounded-xl border border-gray-100 text-left text-sm">A. Adapting to changes with a flexible attitude.</button>
+                                <button onclick="this.classList.add('bg-red-500','text-white')" class="w-full p-3 rounded-xl border border-gray-100 text-left text-sm">B. Abandoning goals immediately.</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <button onclick="finishDailyTask()" class="w-full mt-8 py-4 baicizhan-green text-white rounded-2xl font-bold shadow-lg shadow-emerald-200">完成今日打卡</button>
+            `;
+        }
+
+        // 完成今日打卡
+        function finishDailyTask() {
+            clearSession();
+            location.reload();
+        }
+
+        function updateProgress(force) {
+            const progressBar = document.getElementById('progress');
+            const percent = force !== undefined ? force : (currentIndex / wordData.length) * 100;
+            if (progressBar) progressBar.style.width = `${percent}%`;
+        }
+
+        // 启动应用
+        initStartScreen();
+    </script>
+</body>
+</html>
