@@ -114,6 +114,7 @@
         let learnedInCurrentBatch = []; 
         let currentAudio = new Audio(); // 单例全局 Audio 对象，提高移动端稳定性
         let audioUnlocked = false;
+        let autoSpeakTimeout = null;
 
         // 全局 DOM 元素引用
         let modeTitle, appContent, progress;
@@ -310,9 +311,6 @@
                 currentAudio.pause();
                 currentAudio.onended = null;
                 currentAudio.onerror = null;
-                // 必须重置 src 才能在某些手机端触发重新加载
-                currentAudio.removeAttribute('src');
-                currentAudio.load();
             } catch (e) {}
 
             // 备选音源列表 (HTTPS)
@@ -395,6 +393,7 @@
 
         // 初始化选择模式
         function initChoiceMode() {
+            if (autoSpeakTimeout) clearTimeout(autoSpeakTimeout);
             const data = wordData[currentIndex];
             modeTitle.innerText = "选择单词含义";
             currentMode = 'choice';
@@ -427,19 +426,18 @@
                 </div>
             `;
 
-            // 进入新单词 0.5 秒后自动朗读：先朗读单词，单词读完后自动朗读情景句子
-            setTimeout(() => {
-                log('执行自动朗读逻辑');
-                speak(data.word, 1, () => {
-                    const plainSentence = data.sentence.replace(/<[^>]*>/g, '');
-                    speak(plainSentence, 1);
-                });
+            // 进入新单词 0.5 秒后自动朗读：仅朗读情景句子 (按用户要求取消自动读单词)
+            autoSpeakTimeout = setTimeout(() => {
+                log('执行自动朗读逻辑: 情景例句');
+                const plainSentence = data.sentence.replace(/<[^>]*>/g, '');
+                speak(plainSentence, 1);
             }, 500);
         }
 
         // 检查选择
         function checkChoice(selected, btnElement) {
             try {
+                if (autoSpeakTimeout) clearTimeout(autoSpeakTimeout);
                 const data = wordData[currentIndex];
                 if (selected === data.meaning) {
                     log('选择正确');
@@ -472,6 +470,7 @@
 
         // 显示错题详情界面
         function showErrorDetail() {
+            if (autoSpeakTimeout) clearTimeout(autoSpeakTimeout);
             const data = wordData[currentIndex];
             modeTitle.innerText = "单词详情 (记错了哦)";
             
@@ -511,8 +510,10 @@
             
             // 选错时也读一遍单词和句子帮助记忆
             speak(data.word, 1, () => {
-                const plainSentence = data.sentence.replace(/<[^>]*>/g, '');
-                speak(plainSentence, 1);
+                setTimeout(() => {
+                    const plainSentence = data.sentence.replace(/<[^>]*>/g, '');
+                    speak(plainSentence, 1);
+                }, 300);
             });
         }
 
@@ -560,6 +561,7 @@
 
         // 中文选英文复习模式 (听音选词)
         function initZhToEnReview() {
+            if (autoSpeakTimeout) clearTimeout(autoSpeakTimeout);
             if (learnedInCurrentBatch.length === 0) {
                 // 如果当前批次为空，则根据进度决定下一步
                 if (currentIndex < wordData.length) initChoiceMode();
@@ -595,7 +597,7 @@
                 </div>
             `;
             // 自动播放单词读音
-            setTimeout(() => {
+            autoSpeakTimeout = setTimeout(() => {
                 log('听音选词自动播放');
                 speak(data.word, 1);
             }, 500);
@@ -635,6 +637,7 @@
 
         // 拼写模式
         function initSpellingMode() {
+            if (autoSpeakTimeout) clearTimeout(autoSpeakTimeout);
             const data = wordData[currentIndex];
             modeTitle.innerText = "单词拼写练习";
             currentMode = 'spelling';
@@ -660,7 +663,7 @@
             `;
             
             // 拼写模式自动朗读一次单词
-            setTimeout(() => {
+            autoSpeakTimeout = setTimeout(() => {
                 log('拼写模式自动播放');
                 speak(data.word, 1);
             }, 500);
