@@ -12,12 +12,16 @@
         body {
             font-family: 'Noto Sans SC', sans-serif;
             background-color: #F7F9FB;
+            /* 防止手机端双击缩放 */
+            touch-action: manipulation;
         }
         .card-shadow {
             box-shadow: 0 8px 30px rgba(0,0,0,0.04);
         }
-        .choice-btn:active {
-            transform: scale(0.98);
+        /* 移动端点击反馈 */
+        .choice-btn:active, .baicizhan-green:active {
+            transform: scale(0.96);
+            opacity: 0.8;
         }
         .highlight-word {
             color: #ef4444;
@@ -30,9 +34,16 @@
         .baicizhan-text-green {
             color: #2DBC94;
         }
+        /* 隐藏滚动条但保留功能 */
+        ::-webkit-scrollbar {
+            display: none;
+        }
     </style>
 </head>
 <body class="min-h-screen flex flex-col items-center justify-center p-4">
+
+    <!-- Debug Log (仅在手机端出现问题时开启，默认透明度极低) -->
+    <div id="debug-console" class="fixed bottom-0 left-0 w-full bg-black/80 text-white text-[10px] p-1 pointer-events-none opacity-20 z-50 font-mono max-h-20 overflow-y-auto"></div>
 
     <!-- Main Container -->
     <div id="app" class="w-full max-w-md bg-white rounded-3xl min-h-[600px] card-shadow overflow-hidden flex flex-col relative">
@@ -82,21 +93,32 @@
         let spellingErrors = 0;
         let batchSize = 10; 
         let learnedInCurrentBatch = []; 
-        let currentAudio = null;
+        let currentAudio = new Audio(); // 单例全局 Audio 对象，提高移动端稳定性
         let audioUnlocked = false;
 
         // 全局 DOM 元素引用
         let modeTitle, appContent, progress;
 
+        // 移动端调试日志 (临时)
+        function log(msg) {
+            console.log(msg);
+            const debugConsole = document.getElementById('debug-console');
+            if (debugConsole) {
+                const time = new Date().toLocaleTimeString().split(' ')[0];
+                debugConsole.innerHTML = `<div>[${time}] ${msg}</div>` + debugConsole.innerHTML;
+            }
+        }
+
         // 移动端音频解锁：在第一次点击时播放一段静音
         function unlockAudio() {
             if (audioUnlocked) return;
+            log('正在尝试解锁音频...');
             const silentBuffer = 'data:audio/wav;base64,UklGRigAAABXQVZFRm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA==';
-            const audio = new Audio(silentBuffer);
-            audio.play().then(() => {
+            currentAudio.src = silentBuffer;
+            currentAudio.play().then(() => {
                 audioUnlocked = true;
-                console.log('音频已解锁');
-            }).catch(e => console.warn('音频解锁失败', e));
+                log('音频解锁成功');
+            }).catch(e => log('音频解锁失败: ' + e.message));
         }
 
         // 从 localStorage 加载已背单词 ID 列表
@@ -257,20 +279,17 @@
         function speak(text, times = 1, callback = null) {
             if (!text) return;
             
-            // 停止当前所有正在进行的系统 TTS
+            // 停止当前系统本地语音
             window.speechSynthesis.cancel();
             
-            // 停止当前正在播放的音频
-            if (currentAudio) {
-                currentAudio.pause();
-                currentAudio.onended = null;
-                currentAudio.onerror = null;
-                currentAudio = null;
-            }
+            // 准备播放
+            currentAudio.pause();
+            currentAudio.onended = null;
+            currentAudio.onerror = null;
 
-            // 备选音源列表
+            // 备选音源列表 (全部使用 HTTPS)
             const sources = [
-                `https://dict.youdao.com/dictvoice?audio=${encodeURIComponent(text)}&type=2&client=anywhere`,
+                `https://dict.youdao.com/dictvoice?audio=${encodeURIComponent(text)}&type=2`,
                 `https://tts.baidu.com/text2audio?lan=en&ie=UTF-8&text=${encodeURIComponent(text)}`
             ];
             
@@ -282,51 +301,47 @@
                     return;
                 }
 
-                const url = sources[sourceIndex];
-                const audio = new Audio();
-                audio.src = url;
-                currentAudio = audio;
+                log(`正在尝试音源 ${sourceIndex + 1}...`);
+                currentAudio.src = sources[sourceIndex];
                 let count = 0;
 
-                audio.onended = () => {
+                currentAudio.onended = () => {
                     count++;
                     if (count < times) {
-                        audio.currentTime = 0;
-                        audio.play().catch(e => console.warn('循环播放失败', e));
+                        currentAudio.currentTime = 0;
+                        currentAudio.play().catch(e => log('循环播放失败: ' + e.message));
                     } else {
-                        currentAudio = null;
                         if (callback) callback();
                     }
                 };
 
-                audio.onerror = (err) => {
-                    console.warn(`音源 ${sourceIndex + 1} 加载失败`, err);
+                currentAudio.onerror = (err) => {
+                    log(`音源 ${sourceIndex + 1} 加载失败`);
                     sourceIndex++;
                     tryNextSource();
                 };
 
-                // 在移动端，如果不是由直接点击触发的 play() 可能会失败
-                audio.play().catch(e => {
-                    console.warn(`音源 ${sourceIndex + 1} 播放被拦截`, e);
-                    // 尝试下一个音源，或者直接 fallback
+                currentAudio.play().catch(e => {
+                    log(`音源 ${sourceIndex + 1} 播放失败: ` + e.message);
                     sourceIndex++;
                     tryNextSource();
                 });
             }
 
             function fallbackToSystemTTS() {
+                log('回退到系统本地 TTS');
                 try {
                     const utterance = new SpeechSynthesisUtterance(text);
                     utterance.lang = 'en-US';
                     utterance.rate = 0.9;
                     utterance.onend = () => { if (callback) callback(); };
                     utterance.onerror = (e) => { 
-                        console.warn('系统 TTS 报错', e);
+                        log('系统 TTS 报错');
                         if (callback) callback(); 
                     };
                     window.speechSynthesis.speak(utterance);
                 } catch (e) {
-                    console.error('所有朗读方式均失效', e);
+                    log('所有朗读方式均失效');
                     if (callback) callback();
                 }
             }
@@ -377,26 +392,29 @@
 
         // 检查选择
         function checkChoice(selected, btnElement) {
-            const data = wordData[currentIndex];
-            if (selected === data.meaning) {
-                // 视觉反馈：变绿并禁用点击
-                btnElement.classList.remove('hover:border-emerald-400', 'hover:bg-emerald-50');
-                btnElement.classList.add('bg-emerald-500', 'text-white', 'border-emerald-500');
-                document.querySelectorAll('.choice-btn').forEach(btn => btn.style.pointerEvents = 'none');
-                
-                // 立即中止所有正在进行的朗读（包括当前正在读的情景句子）
-                if (currentAudio) {
+            try {
+                const data = wordData[currentIndex];
+                if (selected === data.meaning) {
+                    log('选择正确: ' + selected);
+                    // 视觉反馈：变绿并禁用点击
+                    btnElement.classList.remove('hover:border-emerald-400', 'hover:bg-emerald-50');
+                    btnElement.classList.add('bg-emerald-500', 'text-white', 'border-emerald-500');
+                    document.querySelectorAll('.choice-btn').forEach(btn => btn.style.pointerEvents = 'none');
+                    
+                    // 立即中止所有正在进行的朗读
                     currentAudio.pause();
-                    currentAudio = null;
-                }
-                window.speechSynthesis.cancel();
+                    window.speechSynthesis.cancel();
 
-                // 选对后等待 0.5 秒直接跳转
-                setTimeout(() => {
-                    nextWord();
-                }, 500);
-            } else {
-                showErrorDetail();
+                    // 选对后等待 0.5 秒直接跳转
+                    setTimeout(() => {
+                        nextWord();
+                    }, 500);
+                } else {
+                    log('选择错误: ' + selected);
+                    showErrorDetail();
+                }
+            } catch (e) {
+                log('checkChoice报错: ' + e.message);
             }
         }
 
@@ -448,33 +466,39 @@
 
         // 下一个单词
         function nextWord() {
-            const finishedWord = wordData[currentIndex];
-            learnedWords.push(finishedWord);
-            learnedInCurrentBatch.push(finishedWord);
-            
-            // 永久保存该单词的进度到 localStorage
-            saveLearnedId(finishedWord.id);
-            
-            currentIndex++;
-            // 保存当前 session 进度
-            saveSession();
-            
-            updateProgress();
+            try {
+                const finishedWord = wordData[currentIndex];
+                learnedWords.push(finishedWord);
+                learnedInCurrentBatch.push(finishedWord);
+                
+                // 永久保存该单词的进度到 localStorage
+                saveLearnedId(finishedWord.id);
+                
+                currentIndex++;
+                log(`进入下一个单词, 索引: ${currentIndex}`);
+                
+                // 保存当前 session 进度
+                saveSession();
+                
+                updateProgress();
 
-            // 每 10 个单词背完后，或者所有单词背完后，进入“中文选英文”模式
-            if (learnedInCurrentBatch.length === batchSize || currentIndex === wordData.length) {
-                if (learnedInCurrentBatch.length > 0) {
-                    initZhToEnReview();
-                    return;
+                // 每 10 个单词背完后，或者所有单词背完后，进入“中文选英文”模式
+                if (learnedInCurrentBatch.length === batchSize || currentIndex === wordData.length) {
+                    if (learnedInCurrentBatch.length > 0) {
+                        initZhToEnReview();
+                        return;
+                    }
                 }
-            }
 
-            if (currentIndex < wordData.length) {
-                initChoiceMode();
-            } else {
-                // 如果已经背完所有单词且复习完，进入拼写模式
-                currentIndex = 0;
-                initSpellingMode();
+                if (currentIndex < wordData.length) {
+                    initChoiceMode();
+                } else {
+                    // 如果已经背完所有单词且复习完，进入拼写模式
+                    currentIndex = 0;
+                    initSpellingMode();
+                }
+            } catch (e) {
+                log('nextWord报错: ' + e.message);
             }
         }
 
