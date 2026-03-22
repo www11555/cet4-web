@@ -95,6 +95,9 @@
     </div>
 
     <script>
+        const APP_VERSION = "2.2-mobile-fix";
+        log('系统版本: ' + APP_VERSION);
+
         // 全局错误捕获，方便移动端调试
         window.onerror = function(msg, url, lineNo, columnNo, error) {
             console.error('全局错误:', msg, 'at', url, ':', lineNo);
@@ -315,6 +318,8 @@
                     currentAudio.pause();
                     currentAudio.onended = null;
                     currentAudio.onerror = null;
+                    // 在切换 src 之前先 load 一下，有助于移动端识别
+                    currentAudio.load();
                 } catch (e) {}
 
                 // 备选音源列表 (HTTPS)
@@ -332,8 +337,10 @@
                     }
 
                     try {
-                        log(`尝试音源 ${sourceIndex + 1}`);
+                        log(`音源 ${sourceIndex + 1} 开始加载`);
                         currentAudio.src = sources[sourceIndex];
+                        currentAudio.load(); // 移动端必须在 set src 后 load
+                        
                         let count = 0;
 
                         currentAudio.onended = () => {
@@ -342,25 +349,29 @@
                                 currentAudio.currentTime = 0;
                                 currentAudio.play().catch(e => log('循环播放失败'));
                             } else {
-                                log('朗读结束');
+                                log('朗读播放完毕');
                                 resolve();
                             }
                         };
 
                         currentAudio.onerror = (err) => {
-                            log(`音源 ${sourceIndex + 1} 报错`);
+                            log(`音源 ${sourceIndex + 1} 加载失败`);
                             sourceIndex++;
                             tryNextSource();
                         };
 
-                        const playPromise = currentAudio.play();
-                        if (playPromise !== undefined) {
-                            playPromise.catch(e => {
-                                log(`音源 ${sourceIndex + 1} 被拦截`);
-                                sourceIndex++;
-                                tryNextSource();
-                            });
-                        }
+                        // 关键：在 canplaythrough 事件后再播放，提高移动端成功率
+                        currentAudio.oncanplaythrough = () => {
+                            currentAudio.oncanplaythrough = null; // 只触发一次
+                            const playPromise = currentAudio.play();
+                            if (playPromise !== undefined) {
+                                playPromise.catch(e => {
+                                    log(`音源 ${sourceIndex + 1} 被拦截: ` + e.name);
+                                    sourceIndex++;
+                                    tryNextSource();
+                                });
+                            }
+                        };
                     } catch (e) {
                         log('播放异常: ' + e.message);
                         sourceIndex++;
@@ -512,9 +523,9 @@
                 <button onclick="initChoiceMode()" class="w-full mt-8 py-4 bg-gray-900 text-white rounded-2xl font-bold shadow-lg">我记住了，再试一次</button>
             `;
             
-            // 选错时也读一遍单词和句子帮助记忆
+            // 选错时也读一遍情景句子帮助记忆 (按用户要求只读情景句一次)
             (async () => {
-                await speak(data.word, 1);
+                log('错题反馈: 朗读情景句');
                 const plainSentence = data.sentence.replace(/<[^>]*>/g, '');
                 await speak(plainSentence, 1);
             })();
